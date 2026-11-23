@@ -1,171 +1,113 @@
-//
-//  AppDelegate.swift
-//  MTMR
-//
-//  Created by Anton Palgunov on 16/03/2018.
-//  Copyright © 2018 Anton Palgunov. All rights reserved.
-//
-
 import Cocoa
-import Sparkle
+import ServiceManagement
 
-@NSApplicationMain
-class AppDelegate: NSObject, NSApplicationDelegate {
-    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    var isBlockedApp: Bool = false
-
-    private var fileSystemSource: DispatchSourceFileSystemObject?
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private var presetWatcher: DispatchSourceFileSystemObject?
 
     func applicationDidFinishLaunching(_: Notification) {
-        // Configure Sparkle
-        SUUpdater.shared().automaticallyDownloadsUpdates = false
-        SUUpdater.shared().automaticallyChecksForUpdates = true
-        SUUpdater.shared().checkForUpdatesInBackground()
+        // Posting key events (esc, media keys) needs Accessibility access.
+        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary)
 
-        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeRetainedValue() as NSString: true] as NSDictionary)
+        statusItem.button?.image = #imageLiteral(resourceName: "StatusImage")
+        BrightnessSync.shared.onDisplaysChanged = { [weak self] in
+            self?.createMenu()
+            TouchBarController.shared.displaysChanged()
+        }
+        createMenu()
 
         TouchBarController.shared.setupControlStripPresence()
+        TouchBarController.shared.reloadStandardConfig()
+        watchPreset()
 
-        if let button = statusItem.button {
-            button.image = #imageLiteral(resourceName: "StatusImage")
-        }
-        createMenu()
-
-        reloadOnDefaultConfigChanged()
-
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateIsBlockedApp), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateIsBlockedApp), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateIsBlockedApp), name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        BrightnessSync.shared.start()
+        BrightnessSync.shared.setSyncing(AppSettings.syncExternalBrightness)
     }
 
-    func applicationWillTerminate(_: Notification) {}
-
-    @objc func updateIsBlockedApp() {
-        if let frontmostAppId = TouchBarController.shared.frontmostApplicationIdentifier {
-            isBlockedApp = AppSettings.blacklistedAppIds.firstIndex(of: frontmostAppId) != nil
-        } else {
-            isBlockedApp = false
-        }
-        createMenu()
-    }
-
-    @objc func openPreferences(_: Any?) {
-        let task = Process()
-        let appSupportDirectory = NSSearchPathForDirectoriesInDomains(.applicationSupportDirectory, .userDomainMask, true).first!.appending("/MTMR")
-        let presetPath = appSupportDirectory.appending("/items.json")
-        task.launchPath = "/usr/bin/open"
-        task.arguments = [presetPath]
-        task.launch()
-    }
-
-    @objc func toggleControlStrip(_ item: NSMenuItem) {
-        item.state = item.state == .on ? .off : .on
-        AppSettings.showControlStripState = item.state == .off
-        TouchBarController.shared.resetControlStrip()
-    }
-
-    @objc func toggleBlackListedApp(_: Any?) {
-        if let appIdentifier = TouchBarController.shared.frontmostApplicationIdentifier {
-            if let index = TouchBarController.shared.blacklistAppIdentifiers.firstIndex(of: appIdentifier) {
-                TouchBarController.shared.blacklistAppIdentifiers.remove(at: index)
-            } else {
-                TouchBarController.shared.blacklistAppIdentifiers.append(appIdentifier)
-            }
-            
-            AppSettings.blacklistedAppIds = TouchBarController.shared.blacklistAppIdentifiers
-            TouchBarController.shared.updateActiveApp()
-            updateIsBlockedApp()
-        }
-    }
-
-    @objc func toggleHapticFeedback(_ item: NSMenuItem) {
-        item.state = item.state == .on ? .off : .on
-        AppSettings.hapticFeedbackState = item.state == .on
-    }
-
-    @objc func toggleMultitouch(_ item: NSMenuItem) {
-        item.state = item.state == .on ? .off : .on
-        AppSettings.multitouchGestures = item.state == .on
-        TouchBarController.shared.basicView?.legacyGesturesEnabled = item.state == .on
-    }
-
-    @objc func openPreset(_: Any?) {
-        let dialog = NSOpenPanel()
-
-        dialog.title = "Choose a items.json file"
-        dialog.showsResizeIndicator = true
-        dialog.showsHiddenFiles = true
-        dialog.canChooseDirectories = false
-        dialog.canCreateDirectories = false
-        dialog.allowsMultipleSelection = false
-        dialog.allowedFileTypes = ["json"]
-        dialog.directoryURL = NSURL.fileURL(withPath: NSSearchPathForDirectoriesInDomains(.applicationSupportDirectory, .userDomainMask, true).first!.appending("/MTMR"), isDirectory: true)
-
-        if dialog.runModal() == .OK, let path = dialog.url?.path {
-            TouchBarController.shared.reloadPreset(path: path)
-        }
-    }
-
-    @objc func toggleStartAtLogin(_: Any?) {
-        LaunchAtLoginController().setLaunchAtLogin(!LaunchAtLoginController().launchAtLogin, for: NSURL.fileURL(withPath: Bundle.main.bundlePath))
-        createMenu()
-    }
-
-    func createMenu() {
+    private func createMenu() {
         let menu = NSMenu()
+        menu.addItem(withTitle: "Edit preset…", action: #selector(openPreset), keyEquivalent: ",")
+        menu.addItem(.separator())
 
-        let startAtLogin = NSMenuItem(title: "Start at login", action: #selector(toggleStartAtLogin(_:)), keyEquivalent: "L")
-        startAtLogin.state = LaunchAtLoginController().launchAtLogin ? .on : .off
+        let sync = NSMenuItem(title: "Sync brightness to external display", action: #selector(toggleBrightnessSync), keyEquivalent: "")
+        sync.state = AppSettings.syncExternalBrightness ? .on : .off
+        menu.addItem(sync)
+        let externals = BrightnessSync.shared.externals
+        let info = NSMenuItem(title: "  External: \(externals.count) found, \(externals.filter(\.replied).count) answering over DDC", action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        menu.addItem(info)
+        menu.addItem(withTitle: "  Rescan displays", action: #selector(rescanDisplays), keyEquivalent: "")
 
-        let toggleBlackList = NSMenuItem(title: "Toggle current app in blacklist", action: #selector(toggleBlackListedApp(_:)), keyEquivalent: "B")
-        toggleBlackList.state = isBlockedApp ? .on : .off
-
-        let hideControlStrip = NSMenuItem(title: "Hide Control Strip", action: #selector(toggleControlStrip(_:)), keyEquivalent: "T")
-        hideControlStrip.state = AppSettings.showControlStripState ? .off : .on
-
-        let hapticFeedback = NSMenuItem(title: "Haptic Feedback", action: #selector(toggleHapticFeedback(_:)), keyEquivalent: "H")
-        hapticFeedback.state = AppSettings.hapticFeedbackState ? .on : .off
-
-        let multitouchGestures = NSMenuItem(title: "Volume/Brightness gestures", action: #selector(toggleMultitouch(_:)), keyEquivalent: "")
-        multitouchGestures.state = AppSettings.multitouchGestures ? .on : .off
-
-        let settingSeparator = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
-        settingSeparator.isEnabled = false
-
-        menu.addItem(withTitle: "Preferences", action: #selector(openPreferences(_:)), keyEquivalent: ",")
-        menu.addItem(withTitle: "Open preset", action: #selector(openPreset(_:)), keyEquivalent: "O")
-        menu.addItem(withTitle: "Check for Updates...", action: #selector(SUUpdater.checkForUpdates(_:)), keyEquivalent: "").target = SUUpdater.shared()
-
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(settingSeparator)
-        menu.addItem(hapticFeedback)
+        let hideControlStrip = NSMenuItem(title: "Hide Control Strip", action: #selector(toggleControlStrip), keyEquivalent: "")
+        hideControlStrip.state = AppSettings.showControlStrip ? .off : .on
         menu.addItem(hideControlStrip)
-        menu.addItem(toggleBlackList)
-        menu.addItem(startAtLogin)
-        menu.addItem(multitouchGestures)
-        menu.addItem(NSMenuItem.separator())
+
+        if #available(macOS 13.0, *) {
+            let login = NSMenuItem(title: "Start at login", action: #selector(toggleStartAtLogin), keyEquivalent: "")
+            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            menu.addItem(login)
+        }
+
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.items.forEach { if $0.action != #selector(NSApplication.terminate(_:)) { $0.target = self } }
         statusItem.menu = menu
     }
 
-    func reloadOnDefaultConfigChanged() {
-        let file = NSURL.fileURL(withPath: standardConfigPath)
+    @objc private func openPreset() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: standardConfigPath))
+    }
 
-        let fd = open(file.path, O_EVTONLY)
+    @objc private func toggleBrightnessSync() {
+        AppSettings.syncExternalBrightness.toggle()
+        BrightnessSync.shared.setSyncing(AppSettings.syncExternalBrightness)
+        createMenu()
+    }
 
-        fileSystemSource = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: DispatchQueue(label: "DefaultConfigChanged"))
+    @objc private func rescanDisplays() {
+        BrightnessSync.shared.refreshDisplays()
+    }
 
-        fileSystemSource?.setEventHandler(handler: {
-            print("Config changed, reloading...")
-            DispatchQueue.main.async {
-                TouchBarController.shared.reloadPreset(path: file.path)
+    @objc private func toggleControlStrip() {
+        AppSettings.showControlStrip.toggle()
+        TouchBarController.shared.resetControlStrip()
+        createMenu()
+    }
+
+    @available(macOS 13.0, *)
+    @objc private func toggleStartAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
             }
-        })
+        } catch {
+            NSLog("MTMR: cannot change login item: %@", String(describing: error))
+        }
+        createMenu()
+    }
 
-        fileSystemSource?.setCancelHandler(handler: {
-            close(fd)
-        })
-
-        fileSystemSource?.resume()
+    /// Reloads the Touch Bar whenever `items.json` is saved.
+    private func watchPreset() {
+        let fd = open(standardConfigPath, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .delete, .rename], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            guard let source = source else { return }
+            if source.data.isDisjoint(with: [.delete, .rename]) {
+                TouchBarController.shared.reloadPreset(path: standardConfigPath)
+                return
+            }
+            // Editors that save atomically replace the file: wait for the new one, then watch it.
+            source.cancel()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                TouchBarController.shared.reloadPreset(path: standardConfigPath)
+                self?.watchPreset()
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        presetWatcher = source
     }
 }

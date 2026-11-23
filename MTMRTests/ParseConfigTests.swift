@@ -1,82 +1,74 @@
 import XCTest
 
-class ParseConfig: XCTestCase {
-    func testButtonNoAction() {
-        let buttonNoActionFixture = """
-            [  { "type": "staticButton",  "title": "Pew" } ]
-        """.data(using: .utf8)!
-        let result = try? JSONDecoder().decode([BarItemDefinition].self, from: buttonNoActionFixture)
-        guard case .staticButton("Pew")? = result?.first?.type else {
-            XCTFail()
-            return
-        }
-        guard result?.first?.actions.count == 0 else {
-            XCTFail()
-            return
-        }
+final class ParseConfigTests: XCTestCase {
+    private func parse(_ json: String) throws -> [BarItemDefinition] {
+        try BarItemDefinition.parsePreset(Data(json.utf8))
     }
 
-    func testButtonKeyCodeAction() {
-        let buttonKeycodeFixture = """
-            [  { "type": "staticButton",  "title": "Pew", "actions": [ { "trigger": "singleTap", "action": "hidKey", "keycode": 123 } ] } ]
-        """.data(using: .utf8)!
-        let result = try? JSONDecoder().decode([BarItemDefinition].self, from: buttonKeycodeFixture)
-        guard case .staticButton("Pew")? = result?.first?.type else {
-            XCTFail()
-            return
-        }
-        guard case .hidKey(keycode: 123)? = result?.first?.actions.filter({ $0.trigger == .singleTap }).first?.value else {
-            XCTFail()
-            return
-        }
-    }
-    
-    func testButtonKeyCodeLegacyAction() {
-        let buttonKeycodeFixture = """
-            [  { "type": "staticButton",  "title": "Pew", "action": "hidKey", "keycode": 123 } ]
-        """.data(using: .utf8)!
-        let result = try? JSONDecoder().decode([BarItemDefinition].self, from: buttonKeycodeFixture)
-        guard case .staticButton("Pew")? = result?.first?.type else {
-            XCTFail()
-            return
-        }
-        guard case .hidKey(keycode: 123)? = result?.first?.legacyAction else {
-            XCTFail()
-            return
-        }
+    func testParsesSupportedItemsWithParameters() throws {
+        let items = try parse("""
+        [
+          { "type": "escape", "width": 64 },
+          { "type": "brightness", "width": 40, "align": "right" },
+          { "type": "brightnessUp", "bordered": false, "align": "right" },
+          { "type": "timeButton", "formatTemplate": "HH:mm:ss", "locale": "de_DE", "align": "right" }
+        ]
+        """)
+        XCTAssertEqual(items, [
+            BarItemDefinition(type: .escape, align: .left, width: 64),
+            BarItemDefinition(type: .brightness, align: .right, width: 40),
+            BarItemDefinition(type: .brightnessUp, align: .right, bordered: false),
+            BarItemDefinition(type: .timeButton(formatTemplate: "HH:mm:ss", timeZone: nil, locale: "de_DE"), align: .right),
+        ])
     }
 
-    func testPredefinedItem() {
-        let buttonKeycodeFixture = """
-            [  { "type": "escape" } ]
-        """.data(using: .utf8)!
-        let result = try? JSONDecoder().decode([BarItemDefinition].self, from: buttonKeycodeFixture)
-        guard case .staticButton("esc")? = result?.first?.type else {
-            XCTFail()
-            return
-        }
-        guard case .keyPress(keycode: 53)? = result?.first?.actions.filter({ $0.trigger == .singleTap }).first?.value else {
-            XCTFail()
-            return
-        }
+    func testDefaults() throws {
+        let items = try parse(#"[ { "type": "brightness" }, { "type": "timeButton" } ]"#)
+        XCTAssertEqual(items, [
+            BarItemDefinition(type: .brightness, align: .center),
+            BarItemDefinition(type: .timeButton(formatTemplate: "HH:mm", timeZone: nil, locale: nil), align: .center),
+        ])
     }
 
-    func testExtendedWidthForPredefinedItem() {
-        let buttonKeycodeFixture = """
-            [  { "type": "escape", "width": 110}, ]
-        """.data(using: .utf8)!
-        let result = try? JSONDecoder().decode([BarItemDefinition].self, from: buttonKeycodeFixture)
-        guard case .staticButton("esc")? = result?.first?.type else {
-            XCTFail()
-            return
-        }
-        guard case .keyPress(keycode: 53)? = result?.first?.actions.filter({ $0.trigger == .singleTap }).first?.value else {
-            XCTFail()
-            return
-        }
-        guard case .width(110)? = result?.first?.additionalParameters[.width] else {
-            XCTFail()
-            return
-        }
+    func testSkipsTypesFromTheFullMTMR() throws {
+        let items = try parse("""
+        [
+          { "type": "weather", "api_key": "x" },
+          { "type": "play" },
+          { "type": "volume" },
+          { "type": "appleScriptTitledButton", "source": { "inline": "return 1" } }
+        ]
+        """)
+        XCTAssertEqual(items.map(\.type), [.play])
+    }
+
+    func testStripsComments() throws {
+        let items = try parse("""
+        // leading comment
+        [
+          /* block
+             comment */
+          { "type": "mute" }, // trailing comment
+          { "type": "play" }
+        ]
+        """)
+        XCTAssertEqual(items.map(\.type), [.mute, .play])
+    }
+
+    func testKeepsDoubleSlashInsideValues() {
+        XCTAssertEqual(#"{ "url": "https://example.com" }"#.strippingComments(), #"{ "url": "https://example.com" }"#)
+    }
+
+    func testBundledDefaultPresetParses() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../MTMR/defaultPreset.json")
+        let items = try BarItemDefinition.parsePreset(Data(contentsOf: url))
+        XCTAssertTrue(items.contains { $0.type == .brightness })
+        XCTAssertTrue(items.contains { $0.type == .escape })
+    }
+
+    func testRejectsInvalidJSON() {
+        XCTAssertThrowsError(try parse("[ { \"type\": "))
     }
 }

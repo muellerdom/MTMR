@@ -2,26 +2,24 @@
 //  TouchBarPrivateApi-Bridging.h
 //  MTMR
 //
-//  Created by Anton Palgunov on 18/03/2018.
-//  Copyright © 2018 Anton Palgunov. All rights reserved.
+//  Private Apple APIs used from Swift.
 //
 
-#import "AMR_ANSIEscapeHelper.h"
+#import <CoreGraphics/CoreGraphics.h>
+#import <IOKit/IOKitLib.h>
 #import "TouchBarPrivateApi.h"
 #import "TouchBarSupport.h"
-#import "DeprecatedCarbonAPI.h"
-#import "CBBlueLightClient.h"
-#import "LaunchAtLoginController.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-CF_EXPORT CFTypeRef MTActuatorCreateFromDeviceID(UInt64 deviceID);
-CF_EXPORT IOReturn MTActuatorOpen(CFTypeRef actuatorRef);
-CF_EXPORT IOReturn MTActuatorClose(CFTypeRef actuatorRef);
-CF_EXPORT IOReturn MTActuatorActuate(CFTypeRef actuatorRef, SInt32 actuationID, UInt32 arg1, Float32 arg2, Float32 arg3);
-CF_EXPORT bool MTActuatorIsOpen(CFTypeRef actuatorRef);
+// DisplayServices.framework: brightness of Apple displays (the built-in panel), level 0…1.
+extern int DisplayServicesGetBrightness(CGDirectDisplayID display, float *brightness);
+extern int DisplayServicesSetBrightness(CGDirectDisplayID display, float brightness);
 
-CF_EXPORT void CoreDisplay_Display_SetUserBrightness(int CGDirectDisplayID, double level);
-CF_EXPORT double CoreDisplay_Display_GetUserBrightness(int CGDirectDisplayID);
+// IOKit: I2C access to external displays through the Apple Silicon display coprocessor (DDC/CI).
+typedef CFTypeRef IOAVServiceRef;
+extern IOAVServiceRef _Nullable IOAVServiceCreateWithService(CFAllocatorRef _Nullable allocator, io_service_t service) CF_RETURNS_RETAINED;
+extern IOReturn IOAVServiceReadI2C(IOAVServiceRef service, uint32_t chipAddress, uint32_t offset, void *outputBuffer, uint32_t outputBufferSize);
+extern IOReturn IOAVServiceWriteI2C(IOAVServiceRef service, uint32_t chipAddress, uint32_t dataAddress, void *inputBuffer, uint32_t inputBufferSize);
 
 NS_ASSUME_NONNULL_END
